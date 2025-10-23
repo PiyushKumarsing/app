@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hybrid Active Contour Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for canvas and UI */
+        body { font-family: 'Inter', sans-serif; background-color: #0d1117; color: #c9d1d9; }
+        .canvas-container { border: 2px solid #30363d; border-radius: 0.5rem; overflow: hidden; position: relative; }
+        canvas { display: block; background: #000; }
+        .step-indicator { border-radius: 9999px; width: 1.5rem; height: 1.5rem; display: flex; align-items: center; justify-content: center; font-weight: bold; }
+        .info-box { background-color: #161b22; border-left: 4px solid #38a169; }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <header class="text-center mb-8">
+        <h1 class="text-3xl font-extrabold text-green-400">Hybrid Active Contour Simulator</h1>
+        <p class="text-gray-400 mt-1">Demonstrating User-Guided Boundary Tracing (2023 Project)</p>
+    </header>
+
+    <div class="max-w-6xl mx-auto">
+        
+        <!-- File Input and Controls -->
+        <div class="bg-gray-800 p-6 rounded-xl shadow-lg mb-8">
+            <input type="file" id="imageInput" accept="image/*" class="hidden" onchange="handleImageUpload(event)">
+            
+            <label for="imageInput" class="cursor-pointer inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-green-600 hover:bg-green-700 transition duration-150 ease-in-out shadow-md">
+                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                Upload Image to Start
+            </label>
+
+            <button onclick="runPipeline()" id="runButton" disabled class="ml-4 px-6 py-3 text-base font-medium rounded-lg text-gray-400 bg-gray-600 cursor-not-allowed">
+                Run Simulation Pipeline
+            </button>
+            <p id="message" class="text-sm mt-3 text-red-400"></p>
+        </div>
+
+        <!-- Pipeline Steps -->
+        <div class="grid md:grid-cols-3 gap-6 mb-8">
+            
+            <!-- Step 1: Sketch Generation -->
+            <div class="flex flex-col items-center">
+                <div class="flex items-center mb-3">
+                    <span class="step-indicator bg-blue-600 text-white mr-2">1</span>
+                    <h2 class="text-xl font-semibold">Sketch & Preprocess</h2>
+                </div>
+                <div class="canvas-container w-full h-64 md:h-80">
+                    <canvas id="sketchCanvas" class="w-full h-full"></canvas>
+                </div>
+                <p class="text-sm text-gray-400 mt-2 text-center">Stage 1: Pencil Sketch Effect (High-Contrast Input)</p>
+            </div>
+
+            <!-- Step 2: Sobel Energy Map -->
+            <div class="flex flex-col items-center">
+                <div class="flex items-center mb-3">
+                    <span class="step-indicator bg-blue-600 text-white mr-2">2</span>
+                    <h2 class="text-xl font-semibold">Sobel Energy Map</h2>
+                </div>
+                <div class="canvas-container w-full h-64 md:h-80">
+                    <canvas id="sobelCanvas" class="w-full h-full"></canvas>
+                </div>
+                <p class="text-sm text-gray-400 mt-2 text-center">Stage 2: External Energy Field ($\text{Sobel}_{\mathbf{X}} + \text{Sobel}_{\mathbf{Y}}$)</p>
+            </div>
+            
+            <!-- Step 3: Hybrid Tracing -->
+            <div class="flex flex-col items-center">
+                <div class="flex items-center mb-3">
+                    <span class="step-indicator bg-blue-600 text-white mr-2">3</span>
+                    <h2 class="text-xl font-semibold">User-Guided Tracing</h2>
+                </div>
+                <div class="canvas-container w-full h-64 md:h-80 relative">
+                    <canvas id="traceCanvas" class="w-full h-full absolute top-0 left-0 z-10"></canvas>
+                    <div class="absolute top-0 left-0 w-full h-full flex flex-col justify-center items-center p-4 text-center z-20 pointer-events-none">
+                        <p class="text-white text-lg font-bold">Manual Constraints Applied</p>
+                        <p class="text-gray-300 text-sm">Tracing algorithm finds the optimal path.</p>
+                        <div class="mt-4 flex space-x-2">
+                             <div class="w-4 h-4 rounded-full bg-purple-500 shadow-md"></div>
+                             <div class="w-4 h-4 rounded-full bg-green-500 shadow-md"></div>
+                        </div>
+                    </div>
+                </div>
+                <p class="text-sm text-gray-400 mt-2 text-center">Stage 3: Hybrid result with $7 \times 7$ scale robustness.</p>
+            </div>
+        </div>
+
+        <!-- Project Explanation Box -->
+        <div class="info-box p-4 rounded-lg text-gray-300 text-sm">
+            <h3 class="font-bold text-lg text-green-400 mb-2">Project Insight: Hybrid Segmentation</h3>
+            <p>This pipeline is valuable because it combines **automated edge detection (Sobel)** with **manual constraints** (colored priors). The $7 \times 7$ patch ensures **scale robustness**, preventing the tracing curve from being caught on minor noise, forcing it instead toward strong, well-defined boundaries.</p>
+        </div>
+
+    </div>
+
+    <script>
+        // Global variables for image and canvas contexts
+        let originalImage = null;
+        let originalWidth = 0;
+        let originalHeight = 0;
+        const canvasMap = {};
+
+        // --- Core Image Processing Functions (Simulated/Approximated) ---
+
+        /**
+         * Converts the image data to grayscale.
+         */
+        function toGrayscale(imgData) {
+            const data = imgData.data;
+            for (let i = 0; i < data.length; i += 4) {
+                const avg = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+                data[i] = data[i + 1] = data[i + 2] = avg;
+            }
+            return imgData;
+        }
+
+        /**
+         * Simulates Stage 1: Pencil Sketch Effect.
+         * Conceptually applies grayscale, blur, and color dodge (approximate).
+         */
+        function applySketchEffect(ctx, imgData) {
+            // Step 1: Grayscale (Base layer)
+            let greyData = toGrayscale(imgData);
+            
+            // Step 2: Simulate Invert and Blur (The blur layer in color dodge)
+            // We'll use a simple conceptual blur visualization here instead of full convolution
+            const data = greyData.data;
+            for (let i = 0; i < data.length; i += 4) {
+                // Simulate the effect: Dark areas become white (highlights)
+                const val = 255 - data[i];
+                data[i] = data[i + 1] = data[i + 2] = val;
+            }
+            
+            // For a simple demo, we just show the inverted grayscale to represent the high-contrast base
+            ctx.putImageData(greyData, 0, 0);
+            
+            // Draw original image faintly underneath to better represent the "sketch" look
+            ctx.globalAlpha = 0.5;
+            ctx.drawImage(originalImage, 0, 0, originalWidth, originalHeight);
+            ctx.globalAlpha = 1.0;
+        }
+
+        /**
+         * Simulates Stage 2: Sobel Edge Detection (Approximation).
+         * This uses a simple 3x3 filter approximation to show where edges are.
+         */
+        function applySobelApproximation(ctx, imgData) {
+            // Use grayscale data for edge detection
+            const greyData = toGrayscale(new ImageData(new Uint8ClampedArray(imgData.data), imgData.width, imgData.height));
+            const width = greyData.width;
+            const height = greyData.height;
+            const data = greyData.data;
+            const outputData = ctx.createImageData(width, height);
+            const output = outputData.data;
+            
+            // Sobel 3x3 kernels (approximation for magnitude)
+            // We use a simple high-pass filter concept for visualization
+            for (let y = 1; y < height - 1; y++) {
+                for (let x = 1; x < width - 1; x++) {
+                    let sum = 0;
+                    for (let ky = -1; ky <= 1; ky++) {
+                        for (let kx = -1; kx <= 1; kx++) {
+                            // Get the index in the 1D array
+                            const idx = ((y + ky) * width + (x + kx)) * 4;
+                            const weight = (kx === 0 && ky === 0) ? -8 : 1; // Simple high-pass/laplacian approx
+                            sum += data[idx] * weight;
+                        }
+                    }
+                    
+                    const magnitude = Math.min(255, Math.abs(sum) / 1.5);
+                    const outIdx = (y * width + x) * 4;
+                    output[outIdx] = output[outIdx + 1] = output[outIdx + 2] = magnitude;
+                    output[outIdx + 3] = 255;
+                }
+            }
+            
+            ctx.putImageData(outputData, 0, 0);
+        }
+
+        /**
+         * Simulates Stage 3: User-Guided Tracing.
+         * Conceptually draws a guided line over the energy map.
+         */
+        function simulateGuidedTracing(ctx, sobelData) {
+            ctx.putImageData(sobelData, 0, 0); // Start with the energy map
+
+            const w = originalWidth;
+            const h = originalHeight;
+            const scaleX = ctx.canvas.width / w;
+            const scaleY = ctx.canvas.height / h;
+
+            // Draw a simulation of the manual constraints (colored patches)
+            ctx.fillStyle = 'rgba(147, 51, 234, 0.4)'; // Purple constraint
+            ctx.fillRect(w * 0.1 * scaleX, h * 0.3 * scaleY, w * 0.2 * scaleX, h * 0.4 * scaleY);
+            ctx.fillStyle = 'rgba(16, 185, 129, 0.4)'; // Green constraint
+            ctx.fillRect(w * 0.6 * scaleX, h * 0.1 * scaleY, w * 0.2 * scaleX, h * 0.3 * scaleY);
+            
+            // Draw the final traced boundary (simulating the white line)
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            
+            // This is a placeholder path to simulate a guided contour
+            ctx.moveTo(w * 0.3 * scaleX, h * 0.2 * scaleY);
+            ctx.bezierCurveTo(
+                w * 0.4 * scaleX, h * 0.05 * scaleY,
+                w * 0.6 * scaleX, h * 0.15 * scaleY,
+                w * 0.7 * scaleX, h * 0.4 * scaleY
+            );
+            ctx.bezierCurveTo(
+                w * 0.8 * scaleX, h * 0.6 * scaleY,
+                w * 0.5 * scaleX, h * 0.8 * scaleY,
+                w * 0.3 * scaleX, h * 0.9 * scaleY
+            );
+            ctx.stroke();
+
+            // Draw the 7x7 scale indicator
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.font = '12px Inter';
+            ctx.fillText('7x7 Scale Zone', 10, h * scaleY - 10);
+            ctx.strokeStyle = '#38a169';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(8, h * scaleY - 30, 80, 25);
+        }
+
+        // --- Setup and Control Functions ---
+
+        /**
+         * Initializes canvas contexts and stores them in a map.
+         */
+        function setupCanvases() {
+            canvasMap.sketch = document.getElementById('sketchCanvas');
+            canvasMap.sobel = document.getElementById('sobelCanvas');
+            canvasMap.trace = document.getElementById('traceCanvas');
+
+            for (const key in canvasMap) {
+                const canvas = canvasMap[key];
+                canvas.ctx = canvas.getContext('2d');
+            }
+        }
+
+        /**
+         * Resizes and clears all canvases, maintaining aspect ratio.
+         */
+        function resizeAndClearCanvases() {
+            const containerWidth = canvasMap.sketch.parentElement.offsetWidth;
+            const aspectRatio = originalHeight / originalWidth;
+            const canvasHeight = containerWidth * aspectRatio;
+
+            for (const key in canvasMap) {
+                const canvas = canvasMap[key];
+                canvas.width = containerWidth;
+                canvas.height = canvasHeight || 320; // Default height if no image loaded
+                canvas.ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+        }
+
+        /**
+         * Main function to execute the simulated pipeline.
+         */
+        function runPipeline() {
+            if (!originalImage) {
+                document.getElementById('message').textContent = 'Please upload an image first.';
+                return;
+            }
+            document.getElementById('message').textContent = '';
+            
+            resizeAndClearCanvases();
+            const w = originalWidth;
+            const h = originalHeight;
+            const scaleX = canvasMap.sketch.width / w;
+            const scaleY = canvasMap.sketch.height / h;
+
+            // 1. Draw Original Image (Source for all steps)
+            const baseCanvas = document.createElement('canvas');
+            baseCanvas.width = w;
+            baseCanvas.height = h;
+            const baseCtx = baseCanvas.getContext('2d');
+            baseCtx.drawImage(originalImage, 0, 0, w, h);
+            let imgData = baseCtx.getImageData(0, 0, w, h);
+            
+            // --- Stage 1: Sketch & Preprocess ---
+            canvasMap.sketch.ctx.drawImage(originalImage, 0, 0, canvasMap.sketch.width, canvasMap.sketch.height);
+            applySketchEffect(canvasMap.sketch.ctx, imgData);
+
+            // 2. Get data for Sobel calculation (must be done on a same-sized context)
+            baseCtx.drawImage(originalImage, 0, 0, w, h);
+            imgData = baseCtx.getImageData(0, 0, w, h);
+
+            // --- Stage 2: Sobel Energy Map ---
+            applySobelApproximation(baseCtx, imgData);
+            const sobelData = baseCtx.getImageData(0, 0, w, h);
+            
+            // Draw Sobel map scaled to fit the canvas
+            canvasMap.sobel.ctx.putImageData(sobelData, 0, 0);
+            canvasMap.sobel.ctx.drawImage(baseCanvas, 0, 0, canvasMap.sobel.width, canvasMap.sobel.height);
+
+            // --- Stage 3: User-Guided Tracing ---
+            simulateGuidedTracing(canvasMap.trace.ctx, sobelData);
+            canvasMap.trace.ctx.drawImage(baseCanvas, 0, 0, canvasMap.trace.width, canvasMap.trace.height);
+        }
+
+        /**
+         * Handles the image file upload event.
+         */
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    originalImage = new Image();
+                    originalImage.onload = function() {
+                        originalWidth = originalImage.width;
+                        originalHeight = originalImage.height;
+                        
+                        resizeAndClearCanvases();
+                        
+                        // Draw the original image faintly in the sketch panel initially
+                        canvasMap.sketch.ctx.drawImage(originalImage, 0, 0, canvasMap.sketch.width, canvasMap.sketch.height);
+                        
+                        // Enable the run button
+                        const runButton = document.getElementById('runButton');
+                        runButton.disabled = false;
+                        runButton.classList.remove('bg-gray-600', 'cursor-not-allowed', 'text-gray-400');
+                        runButton.classList.add('bg-blue-600', 'hover:bg-blue-700', 'text-white', 'cursor-pointer');
+                        document.getElementById('message').textContent = 'Image loaded! Click "Run Simulation Pipeline" to analyze.';
+                    };
+                    originalImage.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        // Initialize on load
+        window.onload = function() {
+            setupCanvases();
+            // Set initial canvas size before image is loaded
+            originalWidth = 600;
+            originalHeight = 320;
+            resizeAndClearCanvases();
+        };
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+             if (originalImage) {
+                runPipeline(); // Re-run pipeline to fit new size
+             } else {
+                resizeAndClearCanvases(); // Just resize to fit container
+             }
+        });
+    </script>
+
+</body>
+</html>
